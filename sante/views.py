@@ -11,8 +11,13 @@ class SuiviSanteViewSet(viewsets.ModelViewSet):
     def get_queryset(self):
         qs = self.queryset
         if self.request.user.is_authenticated:
-            return qs.filter(ferme__proprietaire=self.request.user)
-        return qs.none()
+            qs = qs.filter(ferme__proprietaire=self.request.user)
+        else:
+            return qs.none()
+        animal_id = self.request.query_params.get('animal')
+        if animal_id:
+            qs = qs.filter(animal_id=animal_id)
+        return qs
 
     def perform_create(self, serializer):
         ferme = self.request.user.fermes.first()

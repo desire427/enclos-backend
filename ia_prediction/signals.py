@@ -9,7 +9,7 @@ La prédiction tourne dans un thread séparé pour ne pas ralentir la requête.
 import logging
 
 from django.db import transaction
-from django.db.models.signals import post_save
+from django.db.models.signals import post_save, pre_save
 from django.dispatch import receiver
 
 logger = logging.getLogger(__name__)
@@ -45,6 +45,14 @@ def on_sante_created(sender, instance, created, **kwargs):
 
 
 # ── Fiche animal modifiée ───────────────────────────────────────────────────
+@receiver(pre_save, sender='moncheptel.Animal')
+def on_animal_pre_save(sender, instance, **kwargs):
+    if not instance.pk:
+        return
+    ancien = sender.objects.filter(pk=instance.pk).values_list('poids_naissance', flat=True).first()
+    instance._poids_avant = ancien
+
+
 @receiver(post_save, sender='moncheptel.Animal')
 def on_animal_updated(sender, instance, created, **kwargs):
     """Analyse les nouvelles informations saisies dans Modifier un animal."""

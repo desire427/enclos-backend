@@ -11,5 +11,5 @@ class AlerteViewSet(viewsets.ModelViewSet):
     def get_queryset(self):
         qs = self.queryset
         if self.request.user.is_authenticated:
-            return qs.filter(ferme__proprietaire=self.request.user)
+            return qs.filter(ferme__proprietaire=self.request.user).order_by('-date_creation')
         return qs.none()

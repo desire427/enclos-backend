@@ -322,6 +322,171 @@ def predict(animal, alimentation=None, suivi_sante=None, declencheur='manuel'):
     }
 
 
+def _est_vrai(valeur):
+    if valeur is True:
+        return True
+    if isinstance(valeur, str):
+        return valeur.strip().lower() in {'1', 'true', 'oui', 'yes', 'vrai'}
+    if isinstance(valeur, (int, float)):
+        return valeur != 0
+    return False
+
+
+def _normaliser_reponse_n8n(data):
+    if isinstance(data, list):
+        data = data[0] if data else {}
+    if not isinstance(data, dict):
+        return {}
+    for key in ('json', 'body', 'data'):
+        inner = data.get(key)
+        if isinstance(inner, list) and inner:
+            inner = inner[0]
+        if isinstance(inner, dict) and any(
+            champ in inner for champ in ('creer_alerte', 'explication_llm', 'message_alerte')
+        ):
+            return inner
+    return data
+
+
+def _variation_poids(animal):
+    avant = getattr(animal, '_poids_avant', None)
+    apres = animal.poids_naissance
+    if avant is None or apres is None:
+        return None
+    avant_f, apres_f = float(avant), float(apres)
+    if round(avant_f, 2) == round(apres_f, 2):
+        return None
+    return avant_f, apres_f
+
+
+def _creer_alerte(animal, niveau, message):
+    from alertes.models import Alerte
+
+    if not message:
+        return None
+    if Alerte.objects.filter(
+        ferme=animal.ferme, animal=animal, message=message, statut='non_lue',
+    ).exists():
+        return None
+    return Alerte.objects.create(
+        ferme=animal.ferme, animal=animal,
+        type_alerte=niveau, message=message,
+    )
+
+
+def _alerte_depuis_n8n(animal, reponse_n8n):
+    message = str(reponse_n8n.get('message_alerte') or reponse_n8n.get('alerte_message') or '').strip()
+    if not _est_vrai(reponse_n8n.get('creer_alerte')) or not message:
+        return None
+    niveau = str(reponse_n8n.get('niveau_alerte') or 'Avertissement')
+    return _creer_alerte(animal, niveau, message)
+
+
+def _alerte_variation_poids(animal):
+    """Alerte si le poids vient d'être modifié directement sur la fiche animal."""
+    variation = _variation_poids(animal)
+    if not variation:
+        return None
+    avant_f, apres_f = variation
+    delta = abs(apres_f - avant_f)
+    delta_pct = (delta / avant_f * 100) if avant_f else 100
+    if delta < 2 and delta_pct < 10:
+        return None
+    nom = animal.nom or animal.numero_identification
+    niveau = 'Avertissement' if delta_pct >= 20 or delta >= 5 else 'Info'
+    message = f'Le poids de {nom} est passé de {avant_f:.2f} kg à {apres_f:.2f} kg.'
+    return _creer_alerte(animal, niveau, message)
+
+
+def _alerte_perte_poids_suivi(animal):
+    """
+    Détecte une perte de poids dans l'historique SuiviSante indépendamment
+    d'une modification de la fiche animal.
+    Déclenche une alerte si la dernière mesure est inférieure à la moyenne
+    des mesures précédentes d'au moins 5 % ou 2 kg.
+    """
+    mesures = _mesures_sante(animal)
+    if len(mesures) < 2:
+        return None
+    derniere = mesures[0]
+    if derniere.poids_kg is None:
+        return None
+    poids_precedents = [
+        float(m.poids_kg) for m in mesures[1:] if m.poids_kg is not None
+    ]
+    if not poids_precedents:
+        return None
+    moyenne_avant = sum(poids_precedents) / len(poids_precedents)
+    poids_actuel = float(derniere.poids_kg)
+    delta = moyenne_avant - poids_actuel  # positif = perte
+    if delta <= 0:
+        return None  # pas de perte
+    delta_pct = (delta / moyenne_avant * 100) if moyenne_avant else 100
+    if delta < 2 and delta_pct < 5:
+        return None
+    nom = animal.nom or animal.numero_identification
+    niveau = 'Avertissement' if delta_pct >= 10 or delta >= 5 else 'Info'
+    message = f'{nom} a perdu du poids récemment, surveillez son état.'
+    return _creer_alerte(animal, niveau, message)
+
+
+# Mots-clés indiquant un comportement ou état préoccupant dans les observations
+_MOTS_CLES_ALERTE = [
+    'moins réactif', 'pas réactif', 'peu réactif',
+    'apathi', 'apathique',
+    'faible', 'très faible',
+    'abattu', 'prostré', 'prostration',
+    'ne mange pas', 'refuse de manger', 'perte d\'appétit', 'manque d\'appétit',
+    'diarrhée', 'diarrhee',
+    'fièvre', 'fievre',
+    'boite', 'boiterie', 'boiteux',
+    'toux', 'respiration difficile', 'essoufflé',
+    'tremble', 'tremblements',
+    'ne se lève pas', 'ne se leve pas', 'couché', 'couche',
+    'déshydrat', 'deshydrat',
+    'abcès', 'abces', 'blessure', 'plaie',
+]
+
+
+def _alerte_comportement(animal, suivi_sante=None):
+    """
+    Crée une alerte locale si les observations de l'animal OU la note du
+    suivi santé contiennent des signaux préoccupants, sans attendre n8n.
+    """
+    observations = (animal.observations or '').lower().strip()
+    note_suivi   = (getattr(suivi_sante, 'note', None) or '').lower().strip()
+    texte        = ' '.join(filter(None, [observations, note_suivi]))
+    if not texte:
+        return None
+    for mot in _MOTS_CLES_ALERTE:
+        if mot in texte:
+            nom    = animal.nom or animal.numero_identification
+            source = animal.observations if mot in observations else suivi_sante.note
+            message = (
+                f'{nom} présente un signe préoccupant : "{mot}". '
+                f'Note : {source}'
+            )
+            return _creer_alerte(animal, 'Avertissement', message)
+    return None
+
+
+
+def _historiser_prediction(animal, pr, explication):
+    from django.utils import timezone
+    from historique.models import HistoriqueEvenement
+
+    titre = 'Analyse IA'
+    HistoriqueEvenement.objects.create(
+        ferme=animal.ferme,
+        animal=animal,
+        type_evenement='IA',
+        titre=titre,
+        description=explication or f'Probabilité estimée : {pr.probabilite:.0%}.',
+        date_evenement=timezone.now(),
+        source_ia=True,
+    )
+
+
 def envoyer_n8n(animal, resultat, n8n_url, declencheur='manuel', gestation=None):
     """
     Envoie le résultat + SHAP au webhook n8n pour justification LLM.
@@ -348,6 +513,8 @@ def envoyer_n8n(animal, resultat, n8n_url, declencheur='manuel', gestation=None)
     if gestation and gestation.note:
         observations_parts.append(f"Gestation : {gestation.note}")
 
+    poids_kg = resultat['features_used'].get('poids_kg')
+    variation = _variation_poids(animal)
     payload = {
         # Champs plats : utilisés par le workflow n8n « Préparer les données ».
         'animal_id': animal.id,
@@ -355,6 +522,8 @@ def envoyer_n8n(animal, resultat, n8n_url, declencheur='manuel', gestation=None)
         'espece': animal.espece or '',
         'etat_sante': animal.etat_sante or '',
         'presence': animal.presence or '',
+        'poids_kg': poids_kg,
+        'poids_precedent': variation[0] if variation else None,
         'proba': resultat['probabilite'],
         'prediction_label': 'malade' if resultat['est_malade'] else 'sain',
         'observations': '\n'.join(filter(None, observations_parts)),
@@ -371,6 +540,7 @@ def envoyer_n8n(animal, resultat, n8n_url, declencheur='manuel', gestation=None)
             'sexe':                animal.sexe or '',
             'etat_sante':          animal.etat_sante or '',
             'presence':            animal.presence or '',
+            'poids_kg':            poids_kg,
             'age_mois':            _age_en_mois(animal.date_naissance),
         },
         'prediction': {
@@ -408,9 +578,7 @@ def envoyer_n8n(animal, resultat, n8n_url, declencheur='manuel', gestation=None)
             data = resp.json()
         except ValueError:
             data = {}
-        if not isinstance(data, dict):
-            data = {}
-        return True, data
+        return True, _normaliser_reponse_n8n(data)
     except requests.RequestException as exc:
         logger.warning('Échec envoi n8n pour animal %s : %s', animal.id, exc)
         return False, {}
@@ -474,21 +642,20 @@ def run_prediction(animal, alimentation=None, suivi_sante=None, gestation=None, 
         explication_llm = explication,
     )
 
-    # n8n décide de créer l'alerte et fournit le message : aucune recommandation
-    # médicale ou métier n'est codée dans Django.
-    message_alerte = str(reponse_n8n.get('message_alerte') or reponse_n8n.get('alerte_message') or '')
-    creer_alerte = reponse_n8n.get('creer_alerte') is True
-    if creer_alerte and message_alerte:
-        from alertes.models import Alerte
-        niveau = str(reponse_n8n.get('niveau_alerte') or 'Avertissement')
-        if not Alerte.objects.filter(
-            ferme=animal.ferme, animal=animal, type_alerte=niveau,
-            message=message_alerte, statut='non_lue',
-        ).exists():
-            Alerte.objects.create(
-                ferme=animal.ferme, animal=animal,
-                type_alerte=niveau, message=message_alerte,
-            )
+    # ── Alertes sanitaires ───────────────────────────────────────────────────
+    # 1. Alerte demandée par n8n / LLM (prioritaire)
+    _alerte_depuis_n8n(animal, reponse_n8n)
+
+    # 2. Variation de poids sur la fiche animal (modification directe)
+    _alerte_variation_poids(animal)
+
+    # 3. Perte de poids détectée dans l'historique SuiviSante
+    _alerte_perte_poids_suivi(animal)
+
+    # 4. Observations comportementales suspectes (sans attendre n8n)
+    _alerte_comportement(animal, suivi_sante)
+
+    _historiser_prediction(animal, pr, explication)
 
     logger.info(
         'Prédiction animal %s : %s (%.0f%%) — décl. %s',

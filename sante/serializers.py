@@ -9,7 +9,7 @@ class SuiviSanteSerializer(serializers.ModelSerializer):
         model = SuiviSante
         fields = [
             'id', 'ferme', 'animal', 'animal_nom',
-            'date_debut', 'date_prochaine_consultation',
+            'date_debut', 'date_prochaine_consultation', 'date_fin',
             'statut', 'poids_kg', 'temperature_celsius', 'frequence_cardiaque', 'note',
             'date_creation', 'date_modification',
         ]

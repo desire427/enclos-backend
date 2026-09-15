@@ -8,6 +8,7 @@ class SuiviSante(models.Model):
     animal = models.ForeignKey(Animal, on_delete=models.CASCADE, related_name='sante_suivis', verbose_name='Animal')
     date_debut = models.DateField(null=True, blank=True, verbose_name='Date début')
     date_prochaine_consultation = models.DateField(null=True, blank=True, verbose_name='Date prochaine consultation')
+    date_fin = models.DateField(null=True, blank=True, verbose_name='Date de fin / guérison')
     statut = models.CharField(max_length=80, verbose_name='Statut')
     # Ces mesures viennent directement du formulaire de suivi santé. Elles sont
     # facultatives afin de préserver les suivis déjà créés, mais lorsqu'elles
