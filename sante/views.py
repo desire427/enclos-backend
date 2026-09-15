@@ -8,17 +8,27 @@ class SuiviSanteViewSet(viewsets.ModelViewSet):
     serializer_class = SuiviSanteSerializer
     permission_classes = [permissions.IsAuthenticated]
 
+    def _get_ferme(self):
+        from fermes.models import Ferme
+        ferme_id = self.request.headers.get('X-Ferme-Id') or self.request.query_params.get('ferme_id')
+        qs = Ferme.objects.filter(proprietaire=self.request.user)
+        if ferme_id:
+            return qs.filter(id=ferme_id).first() or qs.first()
+        return qs.first()
+
     def get_queryset(self):
-        qs = self.queryset
-        if self.request.user.is_authenticated:
-            qs = qs.filter(ferme__proprietaire=self.request.user)
+        if not self.request.user.is_authenticated:
+            return self.queryset.none()
+        ferme_id = self.request.headers.get('X-Ferme-Id') or self.request.query_params.get('ferme_id')
+        if ferme_id:
+            qs = self.queryset.filter(ferme__proprietaire=self.request.user, ferme_id=ferme_id)
         else:
-            return qs.none()
+            qs = self.queryset.filter(ferme__proprietaire=self.request.user)
         animal_id = self.request.query_params.get('animal')
         if animal_id:
             qs = qs.filter(animal_id=animal_id)
         return qs
 
     def perform_create(self, serializer):
-        ferme = self.request.user.fermes.first()
+        ferme = self._get_ferme()
         serializer.save(ferme=ferme)

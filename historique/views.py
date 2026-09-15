@@ -13,7 +13,11 @@ class HistoriqueEvenementViewSet(viewsets.ModelViewSet):
         if not self.request.user.is_authenticated:
             return qs.none()
 
-        qs = qs.filter(ferme__proprietaire=self.request.user)
+        ferme_id = self.request.headers.get('X-Ferme-Id') or self.request.query_params.get('ferme_id')
+        if ferme_id:
+            qs = qs.filter(ferme__proprietaire=self.request.user, ferme_id=ferme_id)
+        else:
+            qs = qs.filter(ferme__proprietaire=self.request.user)
 
         # Filtre optionnel par animal : GET /api/historiques/?animal=5
         animal_id = self.request.query_params.get('animal')

@@ -204,6 +204,11 @@ CORS_ALLOWED_ORIGINS = [
 ]
 CORS_ALLOW_CREDENTIALS = True
 
+from corsheaders.defaults import default_headers
+CORS_ALLOW_HEADERS = list(default_headers) + [
+    'x-ferme-id',
+]
+
 # ── IA Prédiction ────────────────────────────────────────────────────────────
 # URL du webhook n8n qui reçoit les résultats SHAP et génère l'explication LLM
 # Configurer dans .env : N8N_WEBHOOK_URL=https://your-n8n-instance.com/webhook/...
