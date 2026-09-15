@@ -15,12 +15,15 @@ from django.dispatch import receiver
 logger = logging.getLogger(__name__)
 
 
-def _run_async(animal, alimentation=None, suivi_sante=None, declencheur='alimentation'):
+def _run_async(animal, alimentation=None, suivi_sante=None, gestation=None, declencheur='alimentation'):
     """Exécute l'analyse après validation effective de l'enregistrement."""
     def task():
         try:
             from ia_prediction.predictor import run_prediction
-            run_prediction(animal, alimentation=alimentation, suivi_sante=suivi_sante, declencheur=declencheur)
+            run_prediction(
+                animal, alimentation=alimentation, suivi_sante=suivi_sante,
+                gestation=gestation, declencheur=declencheur,
+            )
         except Exception as exc:
             logger.error('Signal IA — erreur prédiction animal %s : %s', animal.id, exc, exc_info=True)
 
@@ -48,3 +51,9 @@ def on_animal_updated(sender, instance, created, **kwargs):
     if created:
         return
     _run_async(instance, declencheur='manuel')
+
+
+# ── Gestation créée ou modifiée ──────────────────────────────────────────────
+@receiver(post_save, sender='gestation.Gestation')
+def on_gestation_saved(sender, instance, **kwargs):
+    _run_async(instance.animal, gestation=instance, declencheur='gestation')

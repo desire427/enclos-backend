@@ -8,6 +8,7 @@ class PredictionResultat(models.Model):
     DECLENCHEUR_CHOICES = [
         ('alimentation', 'Alimentation'),
         ('sante',        'Suivi santé'),
+        ('gestation',    'Gestation'),
         ('manuel',       'Manuel'),
     ]
 

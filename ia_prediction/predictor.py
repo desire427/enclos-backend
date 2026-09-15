@@ -145,7 +145,9 @@ def _gestation_stade(animal):
     """Détermine le stade de gestation actif de l'animal."""
     try:
         from gestation.models import Gestation
-        gest = Gestation.objects.filter(animal=animal, statut='active').order_by('-date_debut').first()
+        gest = Gestation.objects.filter(animal=animal).exclude(
+            statut__in=('Terminée', 'terminee', 'terminée')
+        ).order_by('-date_debut').first()
         if not gest:
             return None
         jours = (date.today() - gest.date_debut).days if gest.date_debut else 0
@@ -320,7 +322,7 @@ def predict(animal, alimentation=None, suivi_sante=None, declencheur='manuel'):
     }
 
 
-def envoyer_n8n(animal, resultat, n8n_url, declencheur='manuel'):
+def envoyer_n8n(animal, resultat, n8n_url, declencheur='manuel', gestation=None):
     """
     Envoie le résultat + SHAP au webhook n8n pour justification LLM.
     Retourne True si succès, False sinon.
@@ -334,11 +336,28 @@ def envoyer_n8n(animal, resultat, n8n_url, declencheur='manuel'):
     comparaison = resultat['comparaison_historique']
     historique_lines = json.dumps(comparaison, ensure_ascii=False)
 
+    suivi_sante = resultat.get('suivi_sante')
+    observations_parts = [
+        f"État de santé déclaré dans le formulaire : {animal.get_etat_sante_display()}",
+        animal.observations or '',
+    ]
+    if suivi_sante:
+        observations_parts.append(f"Suivi santé : {suivi_sante['statut']}")
+        if suivi_sante['note']:
+            observations_parts.append(suivi_sante['note'])
+    if gestation and gestation.note:
+        observations_parts.append(f"Gestation : {gestation.note}")
+
     payload = {
         # Champs plats : utilisés par le workflow n8n « Préparer les données ».
         'animal_id': animal.id,
         'nom': animal.nom or animal.numero_identification,
-        'observations': animal.observations or '',
+        'espece': animal.espece or '',
+        'etat_sante': animal.etat_sante or '',
+        'presence': animal.presence or '',
+        'proba': resultat['probabilite'],
+        'prediction_label': 'malade' if resultat['est_malade'] else 'sain',
+        'observations': '\n'.join(filter(None, observations_parts)),
         'shap_lines': shap_lines,
         'historique_lines': historique_lines,
         # Données structurées : utiles pour faire évoluer le workflow sans
@@ -350,6 +369,8 @@ def envoyer_n8n(animal, resultat, n8n_url, declencheur='manuel'):
             'espece':              animal.espece or '',
             'race':                animal.race.nom if animal.race else '',
             'sexe':                animal.sexe or '',
+            'etat_sante':          animal.etat_sante or '',
+            'presence':            animal.presence or '',
             'age_mois':            _age_en_mois(animal.date_naissance),
         },
         'prediction': {
@@ -357,6 +378,16 @@ def envoyer_n8n(animal, resultat, n8n_url, declencheur='manuel'):
             'probabilite': resultat['probabilite'],
             'declencheur': declencheur,
         },
+        'gestation': ({
+            'id': gestation.id,
+            'statut': gestation.statut,
+            'date_saillie': gestation.date_debut.isoformat() if gestation.date_debut else None,
+            'date_prevue': gestation.date_prevue.isoformat() if gestation.date_prevue else None,
+            'date_mise_bas_reelle': gestation.date_mise_bas_reelle.isoformat() if gestation.date_mise_bas_reelle else None,
+            'nombre_naissances': gestation.nombre_naissances,
+            'note': gestation.note,
+        } if gestation else None),
+        'suivi_sante': suivi_sante,
         'shap_values':   resultat['shap_values'],
         'features_used': {
             k: v for k, v in resultat['features_used'].items()
@@ -385,7 +416,7 @@ def envoyer_n8n(animal, resultat, n8n_url, declencheur='manuel'):
         return False, {}
 
 
-def run_prediction(animal, alimentation=None, suivi_sante=None, declencheur='manuel'):
+def run_prediction(animal, alimentation=None, suivi_sante=None, gestation=None, declencheur='manuel'):
     """
     Fonction principale — prédit, envoie à n8n, persiste le résultat.
     Appelée depuis les signals ou l'API.
@@ -398,6 +429,20 @@ def run_prediction(animal, alimentation=None, suivi_sante=None, declencheur='man
 
     try:
         resultat = predict(animal, alimentation, suivi_sante, declencheur)
+        if suivi_sante:
+            resultat['suivi_sante'] = {
+                'id': suivi_sante.id,
+                'statut': suivi_sante.statut,
+                'note': suivi_sante.note or '',
+                'date_debut': suivi_sante.date_debut.isoformat() if suivi_sante.date_debut else None,
+                'date_prochaine_consultation': (
+                    suivi_sante.date_prochaine_consultation.isoformat()
+                    if suivi_sante.date_prochaine_consultation else None
+                ),
+                'poids_kg': float(suivi_sante.poids_kg) if suivi_sante.poids_kg is not None else None,
+                'temperature_celsius': float(suivi_sante.temperature_celsius) if suivi_sante.temperature_celsius is not None else None,
+                'frequence_cardiaque': suivi_sante.frequence_cardiaque,
+            }
     except Exception as exc:
         logger.error('Erreur prédiction IA pour animal %s : %s', animal.id, exc, exc_info=True)
         return None
@@ -406,7 +451,7 @@ def run_prediction(animal, alimentation=None, suivi_sante=None, declencheur='man
     envoye = False
     reponse_n8n = {}
     if n8n_url:
-        envoye, reponse_n8n = envoyer_n8n(animal, resultat, n8n_url, declencheur)
+        envoye, reponse_n8n = envoyer_n8n(animal, resultat, n8n_url, declencheur, gestation)
 
     # Le texte destiné à l'éleveur vient exclusivement de n8n / du LLM.
     explication = str(
