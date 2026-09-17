@@ -314,9 +314,9 @@ def predict(animal, alimentation=None, suivi_sante=None, declencheur='manuel'):
     }
 
     return {
-        'est_malade':    est_malade,
-        'probabilite':   probabilite,
-        'shap_values':   shap_dict,
+        'est_malade':  est_malade,
+        'probabilite': probabilite,
+        'shap_values': shap_dict,
         'features_used': df.iloc[0].to_dict(),
         'comparaison_historique': _comparaison_historique(mesures),
     }
@@ -532,16 +532,16 @@ def envoyer_n8n(animal, resultat, n8n_url, declencheur='manuel', gestation=None)
         # Données structurées : utiles pour faire évoluer le workflow sans
         # perdre d'information.
         'animal': {
-            'id':                  animal.id,
+            'id': animal.id,
             'numero_identification': animal.numero_identification,
-            'nom':                 animal.nom or '',
-            'espece':              animal.espece or '',
-            'race':                animal.race.nom if animal.race else '',
-            'sexe':                animal.sexe or '',
-            'etat_sante':          animal.etat_sante or '',
-            'presence':            animal.presence or '',
-            'poids_kg':            poids_kg,
-            'age_mois':            _age_en_mois(animal.date_naissance),
+            'nom': animal.nom or '',
+            'espece': animal.espece or '',
+            'race': animal.race.nom if animal.race else '',
+            'sexe': animal.sexe or '',
+            'etat_sante': animal.etat_sante or '',
+            'presence': animal.presence or '',
+            'poids_kg': poids_kg,
+            'age_mois': _age_en_mois(animal.date_naissance),
         },
         'prediction': {
             'est_malade':  resultat['est_malade'],
@@ -631,14 +631,14 @@ def run_prediction(animal, alimentation=None, suivi_sante=None, gestation=None, 
 
     # Persister en base
     pr = PredictionResultat.objects.create(
-        animal          = animal,
-        declencheur     = declencheur,
-        est_malade      = resultat['est_malade'],
-        probabilite     = resultat['probabilite'],
-        shap_values     = resultat['shap_values'],
-        features_used   = {k: v for k, v in resultat['features_used'].items() if v != 0},
+        animal = animal,
+        declencheur = declencheur,
+        est_malade = resultat['est_malade'],
+        probabilite = resultat['probabilite'],
+        shap_values = resultat['shap_values'],
+        features_used = {k: v for k, v in resultat['features_used'].items() if v != 0},
         comparaison_historique = resultat['comparaison_historique'],
-        envoye_n8n      = envoye,
+        envoye_n8n = envoye,
         explication_llm = explication,
     )
 
