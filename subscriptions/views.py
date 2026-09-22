@@ -3,17 +3,21 @@ import calendar
 import json
 
 import requests
+from django.db import transaction
 from django.conf import settings
 from django.utils import timezone
 from django.shortcuts import get_object_or_404
-from rest_framework import viewsets, permissions, status
+from rest_framework import serializers, viewsets, permissions, status
 from rest_framework.decorators import action, api_view
 from rest_framework.decorators import authentication_classes, permission_classes
 from rest_framework.response import Response
+from rest_framework_simplejwt.tokens import RefreshToken
 
 from plans.models import Plan
 from .models import Subscription
 from .serializers import SubscriptionSerializer
+from accounts.serializers import RegisterSerializer
+from common_validation import validate_phone
 
 
 def _find_paydunya_checkout_url(payload):
@@ -64,6 +68,32 @@ def _activate_subscription(subscription, payload):
     return subscription
 
 
+def _complete_pending_registration(subscription, payload):
+    if subscription.user_id:
+        return subscription
+
+    registration = subscription.inscription_en_attente or {}
+    if not registration:
+        return subscription
+
+    serializer = RegisterSerializer(data=registration)
+    serializer.is_valid(raise_exception=True)
+    with transaction.atomic():
+        user = serializer.save()
+        subscription.user = user
+        subscription.inscription_en_attente = {}
+        subscription.save(update_fields=['user', 'inscription_en_attente'])
+    return subscription
+
+
+def _authentication_payload(user):
+    refresh = RefreshToken.for_user(user)
+    return {
+        'access': str(refresh.access_token),
+        'refresh': str(refresh),
+    }
+
+
 @api_view(['GET', 'POST'])
 @authentication_classes([])
 @permission_classes([])
@@ -84,6 +114,7 @@ def paydunya_callback(request):
         if not subscription:
             return Response({'detail': 'Facture PayDunya introuvable.'}, status=status.HTTP_404_NOT_FOUND)
 
+        _complete_pending_registration(subscription, payload)
         _activate_subscription(subscription, payload)
         return Response({
             'message': 'Paiement validé avec succès. Votre abonnement est activé.'
@@ -112,19 +143,24 @@ class SubscriptionViewSet(viewsets.ModelViewSet):
 
     @action(detail=False, methods=['get'])
     def active(self, request):
-        sub = get_object_or_404(
-            self.get_queryset().filter(statut='active', date_fin__gt=timezone.now()).order_by('-date_fin')
-        )
+        sub = self.get_queryset().filter(
+            statut='active',
+            date_fin__gt=timezone.now(),
+        ).order_by('-date_fin', '-id').first()
+        if not sub:
+            from rest_framework.exceptions import NotFound
+            raise NotFound('Aucun abonnement actif trouvé.')
         serializer = self.get_serializer(sub)
         return Response(serializer.data)
 
-    @action(detail=False, methods=['post'], url_path='confirm-paydunya')
+    @action(detail=False, methods=['post'], url_path='confirm-paydunya', permission_classes=[permissions.AllowAny])
     def confirm_paydunya(self, request):
         invoice_token = request.data.get('token')
         if not invoice_token:
             return Response({'detail': 'Le token PayDunya est requis.'}, status=status.HTTP_400_BAD_REQUEST)
 
-        subscription = get_object_or_404(self.get_queryset(), paydunya_token=invoice_token)
+        subscription_queryset = Subscription.objects.all() if not request.user.is_authenticated else self.get_queryset()
+        subscription = get_object_or_404(subscription_queryset, paydunya_token=invoice_token)
         endpoint = getattr(settings, 'PAYDUNYA_ENDPOINT', '').replace('/create', f'/confirm/{invoice_token}')
         headers = {
             'Content-Type': 'application/json',
@@ -143,17 +179,30 @@ class SubscriptionViewSet(viewsets.ModelViewSet):
 
         payment_status = str(payload.get('status', '')).lower()
         if payment_status == 'completed':
+            _complete_pending_registration(subscription, payload)
             subscription = _activate_subscription(subscription, payload)
         elif payment_status in ('cancelled', 'failed'):
             subscription.statut = 'cancelled'
             subscription.save(update_fields=['statut'])
 
-        return Response(self.get_serializer(subscription).data)
+        response_data = self.get_serializer(subscription).data
+        if subscription.user_id and not request.user.is_authenticated:
+            response_data['auth'] = _authentication_payload(subscription.user)
+        return Response(response_data)
 
-    @action(detail=False, methods=['post'])
+    @action(detail=False, methods=['post'], permission_classes=[permissions.AllowAny])
     def paydunya(self, request):
         plan_id = request.data.get('plan')
         amount = request.data.get('montant_paye')
+        operator = request.data.get('operator') or 'Mobile'
+        if operator not in ('wave', 'orange', 'Mobile'):
+            return Response({'detail': 'Le moyen de paiement sélectionné est invalide.'}, status=status.HTTP_400_BAD_REQUEST)
+        phone = request.data.get('phone') or ''
+        if phone:
+            try:
+                phone = validate_phone(phone, required=True)
+            except serializers.ValidationError as exc:
+                return Response({'detail': exc.detail}, status=status.HTTP_400_BAD_REQUEST)
         if not plan_id:
             return Response({'detail': 'Le plan est requis.'}, status=status.HTTP_400_BAD_REQUEST)
 
@@ -170,14 +219,19 @@ class SubscriptionViewSet(viewsets.ModelViewSet):
         except Exception:
             return Response({'detail': 'Le montant du paiement est invalide.'}, status=status.HTTP_400_BAD_REQUEST)
 
+        registration = request.data.get('registration') or {}
+        if not request.user.is_authenticated:
+            registration_serializer = RegisterSerializer(data=registration)
+            registration_serializer.is_valid(raise_exception=True)
+
         payload = {
             'invoice': {
                 'total_amount': f'{amount_decimal:.2f}',
                 'description': f'Abonnement {plan.nom}',
                 'customer': {
-                    'name': request.user.get_full_name() or request.user.username,
-                    'email': request.user.email or f'{request.user.username}@example.com',
-                    'phone': request.data.get('phone') or '',
+                        'name': (request.user.get_full_name() or request.user.username) if request.user.is_authenticated else f"{registration.get('first_name', '')} {registration.get('last_name', '')}".strip(),
+                        'email': request.user.email if request.user.is_authenticated else registration.get('email', ''),
+                    'phone': phone,
                 },
             },
             'store': {'name': 'Enclos'},
@@ -233,12 +287,13 @@ class SubscriptionViewSet(viewsets.ModelViewSet):
             }, status=status.HTTP_502_BAD_GATEWAY)
 
         Subscription.objects.create(
-            user=request.user,
+            user=request.user if request.user.is_authenticated else None,
             plan=plan,
             statut='pending',
             montant_paye=amount_decimal,
             paydunya_token=payload_json.get('token'),
-            moyen_paiement=request.data.get('operator') or 'Mobile',
+            moyen_paiement=operator,
+            inscription_en_attente=registration if not request.user.is_authenticated else {},
         )
 
         return Response({

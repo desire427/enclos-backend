@@ -3,6 +3,7 @@ from django.contrib.auth.password_validation import validate_password
 from rest_framework import serializers
 
 from .models import Role, UserProfile
+from common_validation import validate_gps, validate_name, validate_phone, validate_text
 
 User = get_user_model()
 
@@ -43,6 +44,15 @@ class RegisterSerializer(serializers.Serializer):
     description = serializers.CharField(required=False, allow_blank=True)
 
     def validate(self, attrs):
+        attrs['username'] = validate_text(attrs.get('username'), "Le nom d'utilisateur", min_length=2, max_length=150)
+        attrs['email'] = attrs['email'].strip().lower()
+        attrs['first_name'] = validate_name(attrs.get('first_name', ''), 'Le prénom', required=False, min_length=2, max_length=50)
+        attrs['last_name'] = validate_name(attrs.get('last_name', ''), 'Le nom', required=False, min_length=2, max_length=50)
+        attrs['telephone'] = validate_phone(attrs.get('telephone', ''))
+        attrs['nom_ferme'] = validate_name(attrs.get('nom_ferme', ''), 'Le nom de la ferme', required=False)
+        attrs['localisation'] = validate_text(attrs.get('localisation', ''), 'La localisation', required=False, min_length=2, max_length=150)
+        attrs['coordonnees_gps'] = validate_gps(attrs.get('coordonnees_gps', ''))
+        attrs['description'] = validate_text(attrs.get('description', ''), 'La description', required=False, max_length=2000)
         if attrs['password'] != attrs['password_confirm']:
             raise serializers.ValidationError({'password_confirm': 'Les mots de passe ne correspondent pas.'})
         validate_password(attrs['password'])
