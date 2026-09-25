@@ -333,18 +333,27 @@ def _est_vrai(valeur):
 
 
 def _normaliser_reponse_n8n(data):
+    """Normalise la réponse n8n qui peut être dans différents formats."""
     if isinstance(data, list):
         data = data[0] if data else {}
     if not isinstance(data, dict):
         return {}
-    for key in ('json', 'body', 'data'):
+    
+    # Si les clés attendues sont directement dans data, retourne data
+    if any(champ in data for champ in ('creer_alerte', 'explication_llm', 'message_alerte', 'niveau_alerte')):
+        return data
+    
+    # Sinon, cherche dans les sous-clés courantes
+    for key in ('json', 'body', 'data', 'output', 'result'):
         inner = data.get(key)
         if isinstance(inner, list) and inner:
             inner = inner[0]
         if isinstance(inner, dict) and any(
-            champ in inner for champ in ('creer_alerte', 'explication_llm', 'message_alerte')
+            champ in inner for champ in ('creer_alerte', 'explication_llm', 'message_alerte', 'niveau_alerte')
         ):
             return inner
+    
+    # Si rien trouvé, retourne data tel quel (pour logging)
     return data
 
 
@@ -376,7 +385,11 @@ def _creer_alerte(animal, niveau, message):
 
 def _alerte_depuis_n8n(animal, reponse_n8n):
     message = str(reponse_n8n.get('message_alerte') or reponse_n8n.get('alerte_message') or '').strip()
-    if not _est_vrai(reponse_n8n.get('creer_alerte')) or not message:
+    creer_alerte = _est_vrai(reponse_n8n.get('creer_alerte'))
+    
+    logger.info(f"Réponse n8n - creer_alerte: {creer_alerte}, message: {message}, réponse complète: {reponse_n8n}")
+    
+    if not creer_alerte or not message:
         return None
     niveau = str(reponse_n8n.get('niveau_alerte') or 'Avertissement')
     return _creer_alerte(animal, niveau, message)
@@ -515,6 +528,48 @@ def envoyer_n8n(animal, resultat, n8n_url, declencheur='manuel', gestation=None)
 
     poids_kg = resultat['features_used'].get('poids_kg')
     variation = _variation_poids(animal)
+    
+    # Calcul du pourcentage de variation de poids
+    variation_pct = None
+    variation_message = ""
+    if variation:
+        avant_f, apres_f = variation
+        if avant_f > 0:
+            variation_pct = round((abs(apres_f - avant_f) / avant_f) * 100, 1)
+            if apres_f < avant_f:
+                # Perte de poids
+                variation_message = f" ⚠️ ALERTE POIDS: Perte de {variation_pct}% ({avant_f:.1f}kg → {apres_f:.1f}kg)"
+            else:
+                # Gain de poids (moins critique mais notable si important)
+                variation_message = f" ℹ️ POIDS: Gain de {variation_pct}% ({avant_f:.1f}kg → {apres_f:.1f}kg)"
+    
+    # Détection des anomalies critiques pour les mettre en évidence pour le LLM
+    anomalies_detectees = []
+    if variation and variation_pct and variation_pct >= 20:
+        # Seulement les PERTES de poids sont considérées comme critiques
+        if variation[1] < variation[0]:  # apres_f < avant_f = perte
+            anomalies_detectees.append({
+                'type': 'variation_poids_critique',
+                'message': f'Perte de poids de {variation_pct}% ({variation[0]:.1f}kg → {variation[1]:.1f}kg)',
+                'gravite': 'critique' if variation_pct >= 50 else 'moyenne'
+            })
+    
+    # Check observations comportementales
+    mots_cles_preoccupants = ['refuse de manger', 'ne mange pas', 'perte d\'appétit', 'apathique', 'prostré', 'moins réactif', 'salive', 'diarrhée', 'fièvre']
+    observations_text = '\n'.join(filter(None, observations_parts)).lower()
+    for mot in mots_cles_preoccupants:
+        if mot in observations_text:
+            anomalies_detectees.append({
+                'type': 'comportement_preoccupant',
+                'message': f'Symptôme comportemental: "{mot}"',
+                'gravite': 'moyenne'
+            })
+            break  # Un seul symptôme comportemental suffit
+    
+    # Ajouter l'anomalie de poids directement dans les observations pour forcer le LLM à la voir
+    if variation_message:
+        observations_parts.append(variation_message)
+    
     payload = {
         # Champs plats : utilisés par le workflow n8n « Préparer les données ».
         'animal_id': animal.id,
@@ -524,11 +579,13 @@ def envoyer_n8n(animal, resultat, n8n_url, declencheur='manuel', gestation=None)
         'presence': animal.presence or '',
         'poids_kg': poids_kg,
         'poids_precedent': variation[0] if variation else None,
+        'variation_poids_pct': variation_pct,  # Pourcentage de variation calculé
         'proba': resultat['probabilite'],
         'prediction_label': 'malade' if resultat['est_malade'] else 'sain',
         'observations': '\n'.join(filter(None, observations_parts)),
         'shap_lines': shap_lines,
         'historique_lines': historique_lines,
+        'anomalies_detectees': anomalies_detectees,  # Liste des anomalies détectées pour le LLM
         # Données structurées : utiles pour faire évoluer le workflow sans
         # perdre d'information.
         'animal': {
