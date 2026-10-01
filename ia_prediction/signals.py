@@ -49,7 +49,7 @@ def on_sante_created(sender, instance, created, **kwargs):
 def on_animal_pre_save(sender, instance, **kwargs):
     if not instance.pk:
         return
-    ancien = sender.objects.filter(pk=instance.pk).values_list('poids_naissance', flat=True).first()
+    ancien = sender.objects.filter(pk=instance.pk).values_list('poids_actuel', flat=True).first()
     instance._poids_avant = ancien
 
 

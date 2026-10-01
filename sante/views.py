@@ -31,4 +31,37 @@ class SuiviSanteViewSet(viewsets.ModelViewSet):
 
     def perform_create(self, serializer):
         ferme = self._get_ferme()
+        animal = serializer.validated_data.get('animal')
+        if animal.ferme_id != ferme.id:
+            raise ValidationError({'animal': 'Cet animal ne fait pas partie de votre ferme.'})
+        serializer.save(ferme=ferme)
+
+
+from .models import Ordonnance
+from .ordonnance_serializers import OrdonnanceSerializer
+from rest_framework.exceptions import ValidationError
+
+
+class OrdonnanceViewSet(viewsets.ModelViewSet):
+    queryset = Ordonnance.objects.select_related('ferme', 'animal', 'suivi_sante').all()
+    serializer_class = OrdonnanceSerializer
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get_queryset(self):
+        qs = self.queryset.filter(ferme__proprietaire=self.request.user)
+        animal = self.request.query_params.get('animal')
+        if animal:
+            qs = qs.filter(animal_id=animal)
+        return qs
+
+    def perform_create(self, serializer):
+        from fermes.models import Ferme
+        ferme_id = self.request.headers.get('X-Ferme-Id') or self.request.query_params.get('ferme_id')
+        fermes = Ferme.objects.filter(proprietaire=self.request.user)
+        ferme = fermes.filter(id=ferme_id).first() if ferme_id else fermes.first()
+        if not ferme:
+            raise ValidationError({'ferme': 'Aucune ferme active.'})
+        animal = serializer.validated_data.get('animal')
+        if animal.ferme_id != ferme.id:
+            raise ValidationError({'animal': 'Cet animal ne fait pas partie de votre ferme.'})
         serializer.save(ferme=ferme)

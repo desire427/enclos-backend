@@ -215,7 +215,7 @@ def build_features(animal, alimentation=None, suivi_sante=None):
     if suivi_sante is None:
         mesures_existantes = _mesures_sante(animal)
         suivi_sante = mesures_existantes[0] if mesures_existantes else None
-    row['poids_kg'] = float(suivi_sante.poids_kg) if suivi_sante and suivi_sante.poids_kg is not None else float(animal.poids_naissance or 0)
+    row['poids_kg'] = float(suivi_sante.poids_kg) if suivi_sante and suivi_sante.poids_kg is not None else float(animal.poids_actuel or animal.poids_naissance or 0)
     row['temperature_celsius'] = float(suivi_sante.temperature_celsius) if suivi_sante and suivi_sante.temperature_celsius is not None else 38.5
     row['frequence_cardiaque'] = float(suivi_sante.frequence_cardiaque) if suivi_sante and suivi_sante.frequence_cardiaque is not None else 70
 
@@ -359,7 +359,7 @@ def _normaliser_reponse_n8n(data):
 
 def _variation_poids(animal):
     avant = getattr(animal, '_poids_avant', None)
-    apres = animal.poids_naissance
+    apres = animal.poids_actuel or animal.poids_naissance
     if avant is None or apres is None:
         return None
     avant_f, apres_f = float(avant), float(apres)
