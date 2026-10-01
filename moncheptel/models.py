@@ -1,4 +1,5 @@
 from django.db import models
+import uuid
 from fermes.models import Ferme
 
 
@@ -110,6 +111,14 @@ class Animal(models.Model):
         max_digits=8, decimal_places=2, default=0,
         verbose_name='Poids naissance (kg)',
     )
+    poids_actuel = models.DecimalField(
+        max_digits=8, decimal_places=2, default=0,
+        verbose_name='Poids actuel (kg)',
+    )
+    qr_code = models.CharField(max_length=100, blank=True, null=True, verbose_name='Code QR')
+    qr_uuid = models.UUIDField(default=uuid.uuid4, unique=True, editable=False, verbose_name='Identifiant QR')
+    qr_tracking_code = models.CharField(max_length=100, blank=True, null=True, verbose_name='Code de suivi QR')
+    qr_tracking_uuid = models.UUIDField(default=uuid.uuid4, unique=True, editable=False, verbose_name='Identifiant de suivi QR')
 
     # Présence physique (remplace l'ancien statut)
     presence = models.CharField(
@@ -129,6 +138,7 @@ class Animal(models.Model):
 
     couleur      = models.CharField(max_length=80, blank=True, verbose_name='Couleur')
     observations = models.TextField(blank=True, verbose_name='Observations')
+    photo = models.ImageField(upload_to='animaux/', null=True, blank=True, verbose_name='Photo')
 
     date_creation      = models.DateTimeField(auto_now_add=True, verbose_name='Date de création')
     date_modification  = models.DateTimeField(auto_now=True,     verbose_name='Date de modification')

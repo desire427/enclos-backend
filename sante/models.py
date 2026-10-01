@@ -26,3 +26,26 @@ class SuiviSante(models.Model):
 
     def __str__(self):
         return f'{self.animal} - {self.statut}'
+
+
+class Ordonnance(models.Model):
+    """Ordonnance vétérinaire rattachée à un animal et à son suivi."""
+    ferme = models.ForeignKey(Ferme, on_delete=models.CASCADE, related_name='ordonnances')
+    animal = models.ForeignKey(Animal, on_delete=models.CASCADE, related_name='ordonnances')
+    suivi_sante = models.ForeignKey(SuiviSante, on_delete=models.SET_NULL, null=True, blank=True, related_name='ordonnances')
+    titre = models.CharField(max_length=150)
+    veterinaire = models.CharField(max_length=150, blank=True)
+    date_prescription = models.DateField()
+    medicaments = models.TextField()
+    instructions = models.TextField(blank=True)
+    document = models.FileField(upload_to='ordonnances/', null=True, blank=True)
+    date_creation = models.DateTimeField(auto_now_add=True)
+    date_modification = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ['-date_prescription', '-id']
+        verbose_name = 'Ordonnance'
+        verbose_name_plural = 'Ordonnances'
+
+    def __str__(self):
+        return f'{self.titre} — {self.animal}'

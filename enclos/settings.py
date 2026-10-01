@@ -229,6 +229,8 @@ CORS_ALLOW_HEADERS = list(default_headers) + [
 # URL du webhook n8n qui reçoit les résultats SHAP et génère l'explication LLM
 # Configurer dans .env : N8N_WEBHOOK_URL=https://your-n8n-instance.com/webhook/...
 N8N_WEBHOOK_URL = config('N8N_WEBHOOK_URL', default='')
+OPENROUTER_API_KEY = config('OPENROUTER_API_KEY', default='')
+OPENROUTER_VISION_MODEL = config('OPENROUTER_VISION_MODEL', default='openai/gpt-4o-mini')
 SPECTACULAR_SETTINGS = {
     'TITLE': 'Enclos API',
     'DESCRIPTION': 'API de gestion et de suivi du cheptel',
@@ -240,3 +242,6 @@ SPECTACULAR_SETTINGS = {
         'persistAuthorization': True,
     },
 }
+
+MEDIA_URL = '/media/'
+MEDIA_ROOT = BASE_DIR / 'media'
