@@ -22,10 +22,10 @@ import requests
 
 logger = logging.getLogger(__name__)
 
-# ── Chemin du modèle (relatif à ce fichier) ──────────────────────────────────
+# - Chemin du modèle (relatif à ce fichier) -
 MODEL_PATH = Path(__file__).resolve().parent.parent.parent / 'models' / 'model_soutenance_simplon.joblib'
 
-# ── Cache du modèle (chargé une seule fois) ───────────────────────────────────
+# - Cache du modèle (chargé une seule fois) -
 _model = None
 _model_lock = threading.Lock()
 
