@@ -1,3 +1,4 @@
+import json
 from unittest.mock import MagicMock, patch
 
 from django.contrib.auth import get_user_model
@@ -13,6 +14,8 @@ from ia_prediction.predictor import (
     run_prediction,
 )
 from moncheptel.models import Animal
+from rest_framework.test import APIClient
+from ia_prediction.models import PreDiagnostic
 
 
 RESULTAT_FAUX = {
@@ -77,3 +80,41 @@ class AlertePoidsTest(TestCase):
         self.assertTrue(
             HistoriqueEvenement.objects.filter(animal=self.animal, source_ia=True).exists()
         )
+
+
+class PreDiagnosticObservationTest(TestCase):
+    def setUp(self):
+        user = get_user_model().objects.create_user(username='diagnostic', password='pass12345')
+        self.client = APIClient()
+        self.client.force_authenticate(user=user)
+
+    def test_observation_de_moins_de_trois_mots_est_refusee(self):
+        response = self.client.post(
+            '/api/ia/pre-diagnostic/', {'description': 'toux forte'}, format='multipart'
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.data['detail'], 'L’observation doit contenir au moins 3 mots.')
+
+    @patch('ia_prediction.views.requests.post')
+    @override_settings(OPENROUTER_API_KEY='test-key', OPENROUTER_VISION_MODEL='test-model')
+    def test_trois_mots_suffisent_sans_animal_ni_image(self, mock_post):
+        response_from_ai = MagicMock()
+        response_from_ai.json.return_value = {
+            'choices': [{'message': {'content': json.dumps({
+                'suggestions': [],
+                'recommandations': [],
+                'urgence': 'faible',
+                'limites': 'Observation générale.',
+            })}}]
+        }
+        mock_post.return_value = response_from_ai
+
+        response = self.client.post(
+            '/api/ia/pre-diagnostic/', {'description': 'animal tousse souvent'}, format='multipart'
+        )
+
+        self.assertEqual(response.status_code, 201)
+        diagnostic = PreDiagnostic.objects.get(id=response.data['id'])
+        self.assertIsNone(diagnostic.animal_id)
+        self.assertFalse(diagnostic.photo)

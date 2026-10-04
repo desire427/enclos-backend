@@ -11,6 +11,7 @@ Endpoints :
 import threading
 import base64
 import json
+import re
 import requests
 
 from rest_framework import permissions, status
@@ -108,40 +109,50 @@ def pre_diagnostic(request):
     image = request.FILES.get('photo')
     description = (request.data.get('description') or '').strip()
     animal_id = request.data.get('animal_id')
-    if not image:
-        return Response({'detail': 'Une photo est obligatoire.'}, status=status.HTTP_400_BAD_REQUEST)
-    if image.size > 8 * 1024 * 1024:
+    if image and image.size > 8 * 1024 * 1024:
         return Response({'detail': 'La photo ne peut pas dépasser 8 Mo.'}, status=status.HTTP_400_BAD_REQUEST)
-    if image.content_type not in ('image/jpeg', 'image/png', 'image/webp'):
+    if image and image.content_type not in ('image/jpeg', 'image/png', 'image/webp'):
         return Response({'detail': 'Formats acceptés : JPEG, PNG ou WebP.'}, status=status.HTTP_400_BAD_REQUEST)
-    if len(description) < 5 or len(description) > 3000:
-        return Response({'detail': 'La description doit contenir entre 5 et 3 000 caractères.'}, status=status.HTTP_400_BAD_REQUEST)
-    try:
-        animal = Animal.objects.select_related('race').get(id=animal_id, ferme__proprietaire=request.user)
-    except (Animal.DoesNotExist, TypeError, ValueError):
-        return Response({'detail': 'Animal introuvable.'}, status=status.HTTP_404_NOT_FOUND)
-    if animal.presence != 'present':
+    word_count = len(re.findall(r"[^\W_]+(?:['’-][^\W_]+)*", description, flags=re.UNICODE))
+    if word_count < 3:
+        return Response({'detail': 'L’observation doit contenir au moins 3 mots.'}, status=status.HTTP_400_BAD_REQUEST)
+    if len(description) > 3000:
+        return Response({'detail': 'L’observation ne peut pas dépasser 3 000 caractères.'}, status=status.HTTP_400_BAD_REQUEST)
+    animal = None
+    if animal_id:
+        try:
+            animal = Animal.objects.select_related('race').get(id=animal_id, ferme__proprietaire=request.user)
+        except (Animal.DoesNotExist, TypeError, ValueError):
+            return Response({'detail': 'Animal introuvable.'}, status=status.HTTP_404_NOT_FOUND)
+    if animal and animal.presence != 'present':
         return Response({'detail': 'Un pré-diagnostic ne peut pas être demandé pour un animal vendu ou mort.'}, status=status.HTTP_400_BAD_REQUEST)
     if not settings.OPENROUTER_API_KEY:
         return Response({'detail': 'Le service IA n’est pas configuré : ajoutez OPENROUTER_API_KEY au fichier .env.'}, status=status.HTTP_503_SERVICE_UNAVAILABLE)
 
-    try:
-        from PIL import Image
-        checked_image = Image.open(image)
-        checked_image.verify()
-        image.seek(0)
-    except Exception:
-        return Response({'detail': 'Le fichier fourni ne contient pas une image valide.'}, status=status.HTTP_400_BAD_REQUEST)
-    encoded_image = base64.b64encode(image.read()).decode('ascii')
-    context = (f"Espèce : {animal.get_espece_display()}. Race : {animal.race.nom if animal.race else 'non précisée'}. "
-               f"Sexe : {animal.get_sexe_display()}. État actuel : {animal.get_etat_sante_display()}.")
+    encoded_image = None
+    if image:
+        try:
+            from PIL import Image
+            checked_image = Image.open(image)
+            checked_image.verify()
+            image.seek(0)
+        except Exception:
+            return Response({'detail': 'Le fichier fourni ne contient pas une image valide.'}, status=status.HTTP_400_BAD_REQUEST)
+        encoded_image = base64.b64encode(image.read()).decode('ascii')
+    context = 'Aucun animal précis n’est associé à cette demande.'
+    if animal:
+        context = (f"Espèce : {animal.get_espece_display()}. Race : {animal.race.nom if animal.race else 'non précisée'}. "
+                   f"Sexe : {animal.get_sexe_display()}. État actuel : {animal.get_etat_sante_display()}.")
     prompt = (
-        "Tu es un assistant de pré-diagnostic vétérinaire pour éleveurs. Analyse la photo et les signes rapportés. "
+        "Tu es un assistant de pré-diagnostic vétérinaire pour éleveurs. Analyse les signes rapportés et, si elle est disponible, la photo. "
         "Ne donne jamais un diagnostic certain ni médicament ou posologie. Signale les limites de l'image et les signes qui nécessitent un vétérinaire. "
         "Réponds uniquement avec un objet JSON contenant : suggestions (liste d'objets avec nom, justification, niveau), "
         "recommandations (liste d'actions immédiates sûres), urgence (faible, modérée ou élevée), limites (texte). "
-        f"\nAnimal : {context}\nDescription orale retranscrite : {description}"
+        f"\nAnimal : {context}\nObservation rapportée : {description or 'Aucune observation textuelle fournie.'}"
     )
+    message_content = [{'type': 'text', 'text': prompt}]
+    if encoded_image:
+        message_content.append({'type': 'image_url', 'image_url': {'url': f'data:{image.content_type};base64,{encoded_image}'}})
     try:
         response = requests.post(
             'https://openrouter.ai/api/v1/chat/completions', timeout=(10, 60),
@@ -157,10 +168,7 @@ def pre_diagnostic(request):
                 'response_format': {'type': 'json_object'},
                 'messages': [{
                     'role': 'user',
-                    'content': [
-                        {'type': 'text', 'text': prompt},
-                        {'type': 'image_url', 'image_url': {'url': f'data:{image.content_type};base64,{encoded_image}'}},
-                    ],
+                    'content': message_content,
                 }],
             },
         )
@@ -181,19 +189,20 @@ def pre_diagnostic(request):
         return Response({'detail': 'Le pré-diagnostic est momentanément indisponible. Réessayez dans quelques instants.'}, status=status.HTTP_502_BAD_GATEWAY)
 
     diagnostic = PreDiagnostic.objects.create(
-        animal=animal, photo=image, description=description, suggestions=suggestions,
+        animal=animal, photo=image or '', description=description, suggestions=suggestions,
         recommandations=recommendations, urgence=urgency, limites=limitations,
         modele=settings.OPENROUTER_VISION_MODEL,
     )
-    HistoriqueEvenement.objects.create(
-        ferme=animal.ferme, animal=animal, type_evenement='Pré-diagnostic IA',
-        titre='Pré-diagnostic assisté par IA',
-        description=(f"{description}\nSuggestions : {json.dumps(suggestions, ensure_ascii=False)}\n"
-                     f"Recommandations : {json.dumps(recommendations, ensure_ascii=False)}\nUrgence : {urgency}"),
-        date_evenement=timezone.now(), source_ia=True,
-    )
+    if animal:
+        HistoriqueEvenement.objects.create(
+            ferme=animal.ferme, animal=animal, type_evenement='Pré-diagnostic IA',
+            titre='Pré-diagnostic assisté par IA',
+            description=(f"{description}\nSuggestions : {json.dumps(suggestions, ensure_ascii=False)}\n"
+                         f"Recommandations : {json.dumps(recommendations, ensure_ascii=False)}\nUrgence : {urgency}"),
+            date_evenement=timezone.now(), source_ia=True,
+        )
     return Response({
-        'id': diagnostic.id, 'photo': request.build_absolute_uri(diagnostic.photo.url),
+        'id': diagnostic.id, 'photo': request.build_absolute_uri(diagnostic.photo.url) if diagnostic.photo else None,
         'description': diagnostic.description, 'suggestions': diagnostic.suggestions,
         'recommandations': diagnostic.recommandations, 'urgence': diagnostic.urgence,
         'limites': diagnostic.limites, 'date_creation': diagnostic.date_creation,

@@ -11,6 +11,32 @@ class AddFieldIfColumnMissing(migrations.AddField):
             columns = {column.name for column in schema_editor.connection.introspection.get_table_description(cursor, table)}
         column_name = self.field.db_column or self.name
         if column_name not in columns:
+            if isinstance(self.field, models.UUIDField) and self.field.unique:
+                field = to_state.apps.get_model(app_label, self.model_name)._meta.get_field(self.name)
+                nullable_field = field.clone()
+                nullable_field.null = True
+                nullable_field.unique = False
+                nullable_field.default = models.NOT_PROVIDED
+                nullable_field.set_attributes_from_name(self.name)
+                nullable_field.model = model
+                schema_editor.add_field(model, nullable_field)
+
+                quote = schema_editor.quote_name
+                table_name = quote(table)
+                column = quote(column_name)
+                primary_key = quote(model._meta.pk.column)
+                with schema_editor.connection.cursor() as cursor:
+                    cursor.execute(f'SELECT {primary_key} FROM {table_name}')
+                    updates = [
+                        (uuid.uuid4(), row[0])
+                        for row in cursor.fetchall()
+                    ]
+                    cursor.executemany(
+                        f'UPDATE {table_name} SET {column} = %s WHERE {primary_key} = %s',
+                        updates,
+                    )
+                schema_editor.alter_field(model, nullable_field, field)
+                return
             super().database_forwards(app_label, schema_editor, from_state, to_state)
 
 

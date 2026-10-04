@@ -42,8 +42,8 @@ class PredictionResultat(models.Model):
 class PreDiagnostic(models.Model):
     """Analyse assistée conservée dans l'historique de santé de l'animal."""
     URGENCE_CHOICES = [('faible', 'Faible'), ('modérée', 'Modérée'), ('élevée', 'Élevée')]
-    animal = models.ForeignKey(Animal, on_delete=models.CASCADE, related_name='pre_diagnostics')
-    photo = models.ImageField(upload_to='pre_diagnostics/')
+    animal = models.ForeignKey(Animal, on_delete=models.CASCADE, related_name='pre_diagnostics', null=True, blank=True)
+    photo = models.ImageField(upload_to='pre_diagnostics/', blank=True)
     description = models.TextField()
     suggestions = models.JSONField(default=list)
     recommandations = models.JSONField(default=list)
@@ -58,4 +58,5 @@ class PreDiagnostic(models.Model):
         verbose_name_plural = 'Pré-diagnostics'
 
     def __str__(self):
-        return f'Pré-diagnostic {self.animal} — {self.date_creation:%d/%m/%Y}'
+        sujet = str(self.animal) if self.animal else 'sans animal associé'
+        return f'Pré-diagnostic {sujet} — {self.date_creation:%d/%m/%Y}'
