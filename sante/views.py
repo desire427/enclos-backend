@@ -1,6 +1,101 @@
+import base64
+import json
+import re
+from datetime import date
+
+import requests
 from rest_framework import viewsets, permissions
+from rest_framework import status
+from rest_framework.decorators import api_view, parser_classes, permission_classes
+from rest_framework.parsers import FormParser, MultiPartParser
+from rest_framework.response import Response
 from .models import SuiviSante
 from .serializers import SuiviSanteSerializer
+
+
+@api_view(['POST'])
+@permission_classes([permissions.IsAuthenticated])
+@parser_classes([MultiPartParser, FormParser])
+def extraire_ordonnance(request):
+    """Extrait les champs lisibles d'une photo d'ordonnance sans l'enregistrer."""
+    from django.conf import settings
+
+    image = request.FILES.get('photo')
+    if not image:
+        return Response({'detail': 'Ajoutez une photo de l’ordonnance.'}, status=status.HTTP_400_BAD_REQUEST)
+    if image.size > 8 * 1024 * 1024:
+        return Response({'detail': 'La photo ne peut pas dépasser 8 Mo.'}, status=status.HTTP_400_BAD_REQUEST)
+    if image.content_type not in ('image/jpeg', 'image/png', 'image/webp'):
+        return Response({'detail': 'Formats acceptés : JPEG, PNG ou WebP.'}, status=status.HTTP_400_BAD_REQUEST)
+    if not settings.GEMINI_API_KEY:
+        return Response({'detail': 'L’extraction OCR n’est pas configurée : ajoutez GEMINI_API_KEY au fichier .env.'}, status=status.HTTP_503_SERVICE_UNAVAILABLE)
+
+    try:
+        from PIL import Image
+        from PIL import ImageStat
+        checked_image = Image.open(image)
+        checked_image.verify()
+        image.seek(0)
+        checked_image = Image.open(image).convert('L')
+        checked_image.thumbnail((256, 256))
+        image_stats = ImageStat.Stat(checked_image)
+        darkest, brightest = checked_image.getextrema()
+        dark_pixel_ratio = sum(checked_image.histogram()[:12]) / (checked_image.width * checked_image.height)
+        if brightest - darkest < 8 or (image_stats.mean[0] < 18 and dark_pixel_ratio > 0.98):
+            return Response(
+                {'detail': 'La photo est trop sombre, uniforme ou ne contient pas de texte lisible. Reprenez l’ordonnance avec un bon éclairage.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        image.seek(0)
+        encoded_image = base64.b64encode(image.read()).decode('ascii')
+    except Exception:
+        return Response({'detail': 'Le fichier fourni ne contient pas une image valide.'}, status=status.HTTP_400_BAD_REQUEST)
+
+    prompt = (
+        "Transcris cette ordonnance vétérinaire et extrais les champs sans rien inventer. "
+        "Recopie fidèlement les noms de médicaments, dosages, fréquences, durées, voies d’administration et instructions lisibles. "
+        "Regroupe chaque médicament et sa posologie dans le champ medicaments, une ligne par médicament; mets les consignes générales "
+        "dans instructions. Utilise le format de date YYYY-MM-DD uniquement si la date est lisible et non ambiguë; sinon laisse la date vide. "
+        "Si l’image est noire, vide, sans écriture ou ne montre pas une ordonnance vétérinaire, ne devine aucun contenu et indique "
+        "texte_ordonnance_detecte à false. Pour une vraie ordonnance, mets texte_ordonnance_detecte à true. "
+        "Si le titre, le nom du vétérinaire ou un texte est absent ou illisible, renvoie une chaîne vide pour ce champ. "
+        "Réponds uniquement en JSON avec les champs texte_ordonnance_detecte, titre, veterinaire, date_prescription, medicaments et instructions."
+    )
+    try:
+        response = requests.post(
+            f'https://generativelanguage.googleapis.com/v1beta/models/{settings.GEMINI_VISION_MODEL}:generateContent',
+            headers={'x-goog-api-key': settings.GEMINI_API_KEY}, timeout=(10, 60),
+            json={
+                'contents': [{'parts': [
+                    {'text': prompt},
+                    {'inline_data': {'mime_type': image.content_type, 'data': encoded_image}},
+                ]}],
+                'generationConfig': {'temperature': 0, 'responseMimeType': 'application/json'},
+            },
+        )
+        response.raise_for_status()
+        extracted = json.loads(response.json()['candidates'][0]['content']['parts'][0]['text'])
+        if not isinstance(extracted, dict):
+            raise ValueError('La réponse OCR doit être un objet JSON.')
+        fields = ('titre', 'veterinaire', 'date_prescription', 'medicaments', 'instructions')
+        data = {field: str(extracted.get(field) or '').strip() for field in fields}
+        if extracted.get('texte_ordonnance_detecte') is not True or not any(
+            data[field] for field in ('titre', 'medicaments', 'instructions')
+        ):
+            return Response(
+                {'detail': 'Aucune écriture d’ordonnance lisible n’a été détectée. Prenez une photo nette de l’ordonnance.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        if data['date_prescription']:
+            try:
+                date.fromisoformat(data['date_prescription'])
+            except ValueError:
+                data['date_prescription'] = ''
+        data['informations_a_verifier'] = [field for field in fields if not data[field]]
+    except (requests.RequestException, ValueError, KeyError, TypeError, IndexError):
+        return Response({'detail': 'L’extraction de l’ordonnance est indisponible. Réessayez avec une photo plus nette.'}, status=status.HTTP_502_BAD_GATEWAY)
+
+    return Response(data, status=status.HTTP_200_OK)
 
 
 class SuiviSanteViewSet(viewsets.ModelViewSet):

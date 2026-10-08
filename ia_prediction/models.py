@@ -1,4 +1,5 @@
 from django.db import models
+from django.conf import settings
 from moncheptel.models import Animal
 
 
@@ -42,9 +43,13 @@ class PredictionResultat(models.Model):
 class PreDiagnostic(models.Model):
     """Analyse assistée conservée dans l'historique de santé de l'animal."""
     URGENCE_CHOICES = [('faible', 'Faible'), ('modérée', 'Modérée'), ('élevée', 'Élevée')]
+    utilisateur = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name='pre_diagnostics', null=True, blank=True)
     animal = models.ForeignKey(Animal, on_delete=models.CASCADE, related_name='pre_diagnostics', null=True, blank=True)
+    historique_evenement = models.ForeignKey('historique.HistoriqueEvenement', on_delete=models.SET_NULL, related_name='pre_diagnostics', null=True, blank=True)
     photo = models.ImageField(upload_to='pre_diagnostics/', blank=True)
     description = models.TextField()
+    conversation = models.JSONField(default=list, blank=True)
+    espece_image = models.CharField(max_length=20, blank=True)
     suggestions = models.JSONField(default=list)
     recommandations = models.JSONField(default=list)
     urgence = models.CharField(max_length=20, choices=URGENCE_CHOICES, default='modérée')

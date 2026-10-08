@@ -231,6 +231,8 @@ CORS_ALLOW_HEADERS = list(default_headers) + [
 N8N_WEBHOOK_URL = config('N8N_WEBHOOK_URL', default='')
 OPENROUTER_API_KEY = config('OPENROUTER_API_KEY', default='')
 OPENROUTER_VISION_MODEL = config('OPENROUTER_VISION_MODEL', default='openai/gpt-4o-mini')
+GEMINI_API_KEY = config('GEMINI_API_KEY', default='')
+GEMINI_VISION_MODEL = config('GEMINI_VISION_MODEL', default='gemini-2.5-flash')
 SPECTACULAR_SETTINGS = {
     'TITLE': 'Enclos API',
     'DESCRIPTION': 'API de gestion et de suivi du cheptel',

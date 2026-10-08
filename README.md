@@ -204,6 +204,18 @@ python manage.py shell              # Lance un shell Python interactif
 - **CHANNEL_LAYERS** : Configuration du backend pour WebSockets (InMemoryChannelLayer)
 - **N8N_WEBHOOK_URL** : URL du webhook n8n pour l'explication LLM
 
+#### Pré-diagnostic IA par image
+Le pré-diagnostic vérifie d'abord la photo et sa cohérence avec l'observation via Gemini, puis génère les pistes médicales avec OpenRouter. Ajoutez les clés suivantes au fichier `backend/.env` :
+
+```env
+GEMINI_API_KEY=...             # Clé Google AI Studio; Gemini possède une offre gratuite avec quotas
+GEMINI_VISION_MODEL=gemini-2.5-flash
+OPENROUTER_API_KEY=...
+OPENROUTER_VISION_MODEL=openai/gpt-4o-mini
+```
+
+Seules les photos de bovins, ovins, caprins et porcins sont acceptées. Une photo illisible, d'une autre espèce, ou incompatible avec l'observation est refusée avant le pré-diagnostic.
+
 #### `enclos/urls.py`
 **Routing principal** - Définit les routes URL de niveau supérieur :
 ```python
