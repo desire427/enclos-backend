@@ -6,6 +6,10 @@ from moncheptel.models import Animal
 class Alerte(models.Model):
     ferme = models.ForeignKey(Ferme, on_delete=models.CASCADE, related_name='alertes', verbose_name='Ferme')
     animal = models.ForeignKey(Animal, on_delete=models.CASCADE, related_name='alertes', verbose_name='Animal', null=True, blank=True)
+    rappel_ordonnance = models.ForeignKey(
+        'sante.RappelOrdonnance', on_delete=models.SET_NULL, null=True, blank=True,
+        related_name='alertes', verbose_name='Rappel d’ordonnance',
+    )
     type_alerte = models.CharField(max_length=80, verbose_name='Type d’alerte')
     message = models.TextField(verbose_name='Message')
     statut = models.CharField(max_length=60, default='non_lue', verbose_name='Statut')

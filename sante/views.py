@@ -6,7 +6,7 @@ from datetime import date
 import requests
 from rest_framework import viewsets, permissions
 from rest_framework import status
-from rest_framework.decorators import api_view, parser_classes, permission_classes
+from rest_framework.decorators import action, api_view, parser_classes, permission_classes
 from rest_framework.parsers import FormParser, MultiPartParser
 from rest_framework.response import Response
 from .models import SuiviSante
@@ -160,3 +160,30 @@ class OrdonnanceViewSet(viewsets.ModelViewSet):
         if animal.ferme_id != ferme.id:
             raise ValidationError({'animal': 'Cet animal ne fait pas partie de votre ferme.'})
         serializer.save(ferme=ferme)
+
+    @action(detail=True, methods=['post'], url_path=r'traitements/(?P<traitement_id>[^/.]+)/terminer')
+    def terminer_traitement(self, request, pk=None, traitement_id=None):
+        from django.db import transaction
+        from django.utils import timezone
+        from alertes.models import Alerte
+        from .models import TraitementOrdonnance
+
+        ordonnance = self.get_object()
+        try:
+            traitement = TraitementOrdonnance.objects.get(
+                pk=traitement_id, ordonnance=ordonnance,
+            )
+        except (TraitementOrdonnance.DoesNotExist, TypeError, ValueError):
+            return Response({'detail': 'Médicament introuvable dans cette ordonnance.'}, status=status.HTTP_404_NOT_FOUND)
+
+        with transaction.atomic():
+            traitement.actif = False
+            traitement.save(update_fields=['actif'])
+            traitement.rappels.filter(actif=True).update(actif=False)
+            Alerte.objects.filter(
+                rappel_ordonnance__traitement=traitement,
+                statut__in=['non_lue', 'Non lue'],
+            ).update(statut='lue', date_modification=timezone.now())
+
+        ordonnance.refresh_from_db()
+        return Response(self.get_serializer(ordonnance).data)

@@ -1,17 +1,19 @@
 import json
 from io import BytesIO
-from datetime import date
+from datetime import date, datetime
 from unittest.mock import MagicMock, patch
 
 from django.contrib.auth import get_user_model
 from django.core.files.uploadedfile import SimpleUploadedFile
-from django.test import TestCase, override_settings
+from django.test import SimpleTestCase, TestCase, override_settings
+from django.utils import timezone
 from PIL import Image, ImageDraw
 from rest_framework.test import APIClient
 
 from fermes.models import Ferme
 from moncheptel.models import Animal
 from sante.models import Ordonnance, SuiviSante
+from sante.reminders import parse_instructions, parse_medication_schedules
 from sante.sync import etat_depuis_statut, est_suivi_ouvert
 
 
@@ -34,6 +36,74 @@ class MappingSanteTest(TestCase):
         self.assertEqual(etat_depuis_statut('Malade'), 'malade')
         self.assertEqual(etat_depuis_statut('En traitement'), 'en_traitement')
         self.assertEqual(etat_depuis_statut('Guéri'), 'sain')
+
+
+class RappelInstructionsTest(TestCase):
+    def test_date_et_heure_explicites_creent_un_rappel_unique(self):
+        now = timezone.make_aware(datetime(2026, 10, 8, 10, 0))
+
+        reminders = parse_instructions('Administrer le 10/10/2026 à 8h30.', now)
+
+        self.assertEqual(len(reminders), 1)
+        self.assertEqual(reminders[0]['date_prochaine_prise'].date(), date(2026, 10, 10))
+        self.assertEqual(reminders[0]['date_prochaine_prise'].hour, 8)
+        self.assertIsNone(reminders[0]['intervalle_minutes'])
+
+    def test_repetition_quotidienne_exige_une_duree_et_supporte_plusieurs_heures(self):
+        now = timezone.make_aware(datetime(2026, 10, 8, 7, 0))
+
+        reminders = parse_instructions('Tous les jours à 8h et à 20:00 pendant 5 jours.', now)
+
+        self.assertEqual(len(reminders), 2)
+        self.assertEqual([item['date_prochaine_prise'].hour for item in reminders], [8, 20])
+        self.assertTrue(all(item['intervalle_minutes'] == 1440 for item in reminders))
+        self.assertTrue(all(item['date_fin'].date() == date(2026, 10, 12) for item in reminders))
+
+    def test_date_de_fin_ne_devient_pas_le_debut_de_la_repetition(self):
+        now = timezone.make_aware(datetime(2026, 10, 8, 7, 0))
+
+        reminders = parse_instructions('Tous les jours à 8h jusqu’au 10/10/2026.', now)
+
+        self.assertEqual(len(reminders), 1)
+        self.assertEqual(reminders[0]['date_prochaine_prise'].date(), date(2026, 10, 8))
+        self.assertEqual(reminders[0]['date_fin'].date(), date(2026, 10, 10))
+
+    def test_consigne_ambigue_ou_date_passee_ne_cree_pas_de_rappel(self):
+        now = timezone.make_aware(datetime(2026, 10, 8, 10, 0))
+
+        reminders = parse_instructions(
+            'Donner deux fois par jour. Tous les jours à 8h. Le 01/10/2026 à 9h.', now
+        )
+
+        self.assertEqual(reminders, [])
+
+
+class ParseHorairesMedicamentsTest(SimpleTestCase):
+    def test_separe_plusieurs_medicaments_et_heures_de_prise(self):
+        now = timezone.make_aware(datetime(2026, 10, 9, 7, 0))
+
+        treatments = parse_medication_schedules(
+            'Ivermectine orale: 1 matin (08h00), 1 soir (18h00)\n'
+            'Vitamine B: 1 soir (20h00)',
+            prescription_date=date(2026, 10, 9),
+            now=now,
+        )
+
+        self.assertEqual([item['medicament'] for item in treatments], ['Ivermectine orale', 'Vitamine B'])
+        self.assertEqual(
+            [reminder['date_prochaine_prise'].hour for reminder in treatments[0]['rappels']],
+            [8, 18],
+        )
+        self.assertEqual(treatments[1]['rappels'][0]['date_prochaine_prise'].hour, 20)
+
+    def test_date_ponctuelle_sans_indication_de_prise_recurrente_est_ignoree(self):
+        now = timezone.make_aware(datetime(2026, 10, 9, 7, 0))
+
+        treatments = parse_medication_schedules(
+            '', 'Ivermectine orale: administrer le 10/10/2026 à 08h00', now=now,
+        )
+
+        self.assertEqual(treatments, [])
 
 
 class ExtractionOrdonnanceTest(TestCase):

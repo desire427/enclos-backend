@@ -49,3 +49,40 @@ class Ordonnance(models.Model):
 
     def __str__(self):
         return f'{self.titre} — {self.animal}'
+
+
+class TraitementOrdonnance(models.Model):
+    ordonnance = models.ForeignKey(Ordonnance, on_delete=models.CASCADE, related_name='traitements')
+    medicament = models.CharField(max_length=300)
+    posologie = models.TextField()
+    actif = models.BooleanField(default=True)
+    date_creation = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        verbose_name = 'Médicament prescrit'
+        verbose_name_plural = 'Médicaments prescrits'
+
+    def __str__(self):
+        return f'{self.medicament} — {self.ordonnance}'
+
+
+class RappelOrdonnance(models.Model):
+    ordonnance = models.ForeignKey(Ordonnance, on_delete=models.CASCADE, related_name='rappels')
+    traitement = models.ForeignKey(
+        TraitementOrdonnance, on_delete=models.CASCADE, null=True, blank=True, related_name='rappels',
+    )
+    instruction = models.TextField()
+    date_prochaine_prise = models.DateTimeField()
+    intervalle_minutes = models.PositiveIntegerField(null=True, blank=True)
+    date_fin = models.DateTimeField(null=True, blank=True)
+    actif = models.BooleanField(default=True)
+    dernier_rappel = models.DateTimeField(null=True, blank=True)
+    date_creation = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        verbose_name = 'Rappel d’ordonnance'
+        verbose_name_plural = 'Rappels d’ordonnance'
+        indexes = [models.Index(fields=['actif', 'date_prochaine_prise'])]
+
+    def __str__(self):
+        return f'{self.ordonnance} — {self.date_prochaine_prise}'

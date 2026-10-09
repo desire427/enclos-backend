@@ -1,14 +1,31 @@
 from rest_framework import serializers
 from common_validation import validate_text
-from .models import Ordonnance
+from django.utils import timezone
+from .models import Ordonnance, TraitementOrdonnance
+
+
+class TraitementOrdonnanceSerializer(serializers.ModelSerializer):
+    heures_prise = serializers.SerializerMethodField()
+
+    class Meta:
+        model = TraitementOrdonnance
+        fields = ['id', 'medicament', 'posologie', 'actif', 'heures_prise']
+        read_only_fields = fields
+
+    def get_heures_prise(self, obj):
+        return sorted({
+            timezone.localtime(reminder.date_prochaine_prise).strftime('%H:%M')
+            for reminder in obj.rappels.filter(actif=True)
+        })
 
 
 class OrdonnanceSerializer(serializers.ModelSerializer):
     animal_nom = serializers.SerializerMethodField()
+    traitements = TraitementOrdonnanceSerializer(many=True, read_only=True)
 
     class Meta:
         model = Ordonnance
-        fields = ['id', 'ferme', 'animal', 'animal_nom', 'suivi_sante', 'titre', 'veterinaire', 'date_prescription', 'medicaments', 'instructions', 'document', 'date_creation', 'date_modification']
+        fields = ['id', 'ferme', 'animal', 'animal_nom', 'suivi_sante', 'titre', 'veterinaire', 'date_prescription', 'medicaments', 'instructions', 'traitements', 'document', 'date_creation', 'date_modification']
         read_only_fields = ['id', 'ferme', 'date_creation', 'date_modification']
 
     def validate(self, attrs):
