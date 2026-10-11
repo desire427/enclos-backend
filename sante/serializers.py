@@ -31,8 +31,8 @@ class SuiviSanteSerializer(serializers.ModelSerializer):
         validate_date_order(attrs, 'date_debut', 'date_fin', 'La date de fin doit être postérieure à la date de début.')
         if attrs.get('poids_kg') is not None:
             validate_non_negative(attrs['poids_kg'], 'Le poids')
-            if attrs['poids_kg'] > 6000:
-                raise serializers.ValidationError({'poids_kg': 'Le poids ne peut pas dépasser 6 000 kg.'})
+            if attrs['poids_kg'] > 3000:
+                raise serializers.ValidationError({'poids_kg': 'Le poids ne peut pas dépasser 3 000 kg.'})
         if attrs.get('temperature_celsius') is not None and not 20 <= attrs['temperature_celsius'] <= 50:
             raise serializers.ValidationError({'temperature_celsius': 'La température doit être comprise entre 20 et 50 °C.'})
         if attrs.get('frequence_cardiaque') is not None and not 1 <= attrs['frequence_cardiaque'] <= 500:
