@@ -97,12 +97,13 @@ class PreDiagnosticObservationTest(TestCase):
         return SimpleUploadedFile('animal.png', image_data.getvalue(), content_type='image/png')
 
     @staticmethod
-    def image_check(species, matches=True, reason=''):
+    def image_check(species, matches=True, reason='', observations=''):
         response = MagicMock()
         response.json.return_value = {'candidates': [{'content': {'parts': [{'text': json.dumps({
             'espece_image': species,
             'correspondance': matches,
             'raison': reason,
+            'observations_visuelles': observations,
         })}]}}]}
         return response
 
@@ -153,7 +154,44 @@ class PreDiagnosticObservationTest(TestCase):
         self.assertIsNone(diagnostic.animal_id)
         self.assertTrue(diagnostic.photo)
         self.assertEqual(response.data['validation_image']['espece'], 'ovin')
+        self.assertEqual(diagnostic.observations_visuelles, '')
         self.assertEqual(mock_post.call_count, 3)
+
+    @patch('ia_prediction.views.requests.post')
+    @override_settings(
+        GEMINI_API_KEY='test-key', GEMINI_VISION_MODEL='gemini-test',
+        OPENROUTER_API_KEY='test-key', OPENROUTER_VISION_MODEL='test-model',
+    )
+    def test_constats_visuels_sont_conserves_et_fournis_au_modele_de_pre_diagnostic(self, mock_post):
+        observations = 'Ovin visible de profil; silhouette mince à confirmer par un examen clinique.'
+        response_from_openrouter = MagicMock()
+        response_from_openrouter.json.return_value = {
+            'choices': [{'message': {'content': json.dumps({
+                'message': 'La photo montre un ovin avec une silhouette qui paraît mince; cela ne suffit pas à poser un diagnostic.',
+                'suggestions': [],
+                'recommandations': [],
+                'urgence': 'modérée',
+                'limites': 'Une photo seule ne permet pas d’évaluer précisément l’état corporel.',
+            })}}]
+        }
+        mock_post.side_effect = [
+            self.image_check('ovin', observations=observations),
+            self.scope_check(),
+            response_from_openrouter,
+        ]
+
+        response = self.client.post(
+            '/api/ia/pre-diagnostic/',
+            {'description': 'Mon mouton semble trop maigre', 'photo': self.photo()},
+            format='multipart',
+        )
+
+        self.assertEqual(response.status_code, 201)
+        diagnostic = PreDiagnostic.objects.get(id=response.data['id'])
+        self.assertEqual(diagnostic.observations_visuelles, observations)
+        self.assertEqual(response.data['validation_image']['observations'], observations)
+        prompt_messages = mock_post.call_args_list[2].kwargs['json']['messages']
+        self.assertIn(observations, prompt_messages[0]['content'])
 
     @patch('ia_prediction.views.requests.post')
     @override_settings(
@@ -305,6 +343,27 @@ class PreDiagnosticObservationTest(TestCase):
         response = self.client.post(
             '/api/ia/pre-diagnostic/',
             {'description': 'Mon porc refuse de manger', 'photo': self.photo()}, format='multipart'
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn('ne semblent pas correspondre', response.data['detail'])
+        self.assertEqual(mock_post.call_count, 2)
+
+    @patch('ia_prediction.views.requests.post')
+    @override_settings(
+        GEMINI_API_KEY='test-key', GEMINI_VISION_MODEL='gemini-test',
+        OPENROUTER_API_KEY='test-key', OPENROUTER_VISION_MODEL='test-model',
+    )
+    def test_espece_differente_de_la_photo_est_signalee_avant_le_refus_generique(self, mock_post):
+        mock_post.side_effect = [
+            self.image_check('ovin', matches=False, reason='La photo montre un ovin, pas un bovin.'),
+            self.scope_check(in_domain=True, concerns_animal=False),
+        ]
+
+        response = self.client.post(
+            '/api/ia/pre-diagnostic/',
+            {'description': 'J’ai un problème de santé avec cette vache', 'photo': self.photo()},
+            format='multipart',
         )
 
         self.assertEqual(response.status_code, 400)

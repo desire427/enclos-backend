@@ -3,6 +3,7 @@ from io import BytesIO
 from datetime import date, datetime
 from unittest.mock import MagicMock, patch
 
+import requests
 from django.contrib.auth import get_user_model
 from django.core.files.uploadedfile import SimpleUploadedFile
 from django.test import SimpleTestCase, TestCase, override_settings
@@ -124,6 +125,34 @@ class ExtractionOrdonnanceTest(TestCase):
 
     @patch('sante.views.requests.post')
     @override_settings(GEMINI_API_KEY='test-key', GEMINI_VISION_MODEL='gemini-test')
+    def test_refus_de_cle_gemini_est_signale_sans_masquer_la_cause(self, mock_post):
+        upstream_response = requests.Response()
+        upstream_response.status_code = 403
+        mock_post.side_effect = requests.HTTPError(response=upstream_response)
+
+        response = self.client.post(
+            '/api/ordonnances/extraire/', {'photo': self.image()}, format='multipart'
+        )
+
+        self.assertEqual(response.status_code, 503)
+        self.assertIn('clé Gemini', response.data['detail'])
+
+    @patch('sante.views.requests.post')
+    @override_settings(GEMINI_API_KEY='test-key', GEMINI_VISION_MODEL='gemini-test')
+    def test_quota_gemini_atteint_est_signale(self, mock_post):
+        upstream_response = requests.Response()
+        upstream_response.status_code = 429
+        mock_post.side_effect = requests.HTTPError(response=upstream_response)
+
+        response = self.client.post(
+            '/api/ordonnances/extraire/', {'photo': self.image()}, format='multipart'
+        )
+
+        self.assertEqual(response.status_code, 503)
+        self.assertIn('quota', response.data['detail'])
+
+    @patch('sante.views.requests.post')
+    @override_settings(GEMINI_API_KEY='test-key', GEMINI_VISION_MODEL='gemini-test')
     def test_ocr_retourne_les_champs_sans_creer_l_ordonnance(self, mock_post):
         response_from_gemini = MagicMock()
         response_from_gemini.json.return_value = {'candidates': [{'content': {'parts': [{'text': json.dumps({
@@ -146,6 +175,28 @@ class ExtractionOrdonnanceTest(TestCase):
         self.assertIn('Oxytétracycline', response.data['medicaments'])
         self.assertEqual(Ordonnance.objects.count(), 0)
         mock_post.assert_called_once()
+
+    @patch('sante.views.requests.post')
+    @override_settings(GEMINI_API_KEY='test-key', GEMINI_VISION_MODEL='gemini-test')
+    def test_ocr_accepte_le_texte_visible_d_une_ordonnance_fictive_meme_si_gemini_la_classe_test(self, mock_post):
+        response_from_gemini = MagicMock()
+        response_from_gemini.json.return_value = {'candidates': [{'content': {'parts': [{'text': json.dumps({
+            'texte_ordonnance_detecte': False,
+            'titre': 'Ordonnance fictive',
+            'veterinaire': 'Dr Exemple Test',
+            'date_prescription': '2026-10-20',
+            'medicaments': 'Produit fictif ALPHA : 1 unité fictive, une fois par jour, 3 jours',
+            'instructions': 'Tous les jours à 12h55',
+        })}]}}]}
+        mock_post.return_value = response_from_gemini
+
+        response = self.client.post(
+            '/api/ordonnances/extraire/', {'photo': self.image()}, format='multipart'
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIn('Produit fictif ALPHA', response.data['medicaments'])
+        self.assertEqual(response.data['instructions'], 'Tous les jours à 12h55')
 
     @patch('sante.views.requests.post')
     @override_settings(GEMINI_API_KEY='test-key', GEMINI_VISION_MODEL='gemini-test')

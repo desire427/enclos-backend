@@ -160,6 +160,7 @@ def pre_diagnostic(request):
 
     encoded_image = None
     image_species = diagnostic.espece_image if diagnostic else ''
+    visual_observations = diagnostic.observations_visuelles if diagnostic else ''
     image_matches_description = True
     image_mismatch_reason = ''
     try:
@@ -174,10 +175,14 @@ def pre_diagnostic(request):
             except Exception:
                 return Response({'detail': 'Le fichier fourni ne contient pas une image valide.'}, status=status.HTTP_400_BAD_REQUEST)
             validation_prompt = (
-                "Analyse cette photo et l’observation associée. Identifie l’espèce visible et vérifie si le texte décrit bien cet animal "
-                "ou un problème de santé qui peut le concerner. Un symptôme qui ne cite pas l’espèce est cohérent s’il concerne clairement "
-                "l’animal photographié. Une autre espèce ou un sujet sans rapport ne correspond pas. Réponds uniquement en JSON avec : "
-                "espece_image (bovin, ovin, caprin, porcin, autre ou indeterminable), correspondance (booléen), raison (courte explication en français). "
+                "Observe attentivement cette photo d’animal. Identifie l’espèce et décris seulement les signes directement visibles "
+                "qui peuvent être pertinents pour sa santé (silhouette et état corporel apparent, posture, démarche si observable, "
+                "état du pelage ou de la peau, blessures ou écoulements visibles). N’infère pas de maladie à partir de la photo et "
+                "précise les limites liées à l’angle, à la qualité de l’image ou à la laine. Vérifie ensuite si l’observation de l’éleveur "
+                "concerne l’animal photographié : un symptôme qui ne cite pas l’espèce est cohérent s’il concerne cet animal; une autre "
+                "espèce nommée ou un sujet sans rapport ne correspond pas. Réponds uniquement en JSON avec : "
+                "espece_image (bovin, ovin, caprin, porcin, autre ou indeterminable), correspondance (booléen), "
+                "raison (courte explication en français), observations_visuelles (description factuelle et prudente en français). "
                 f"Observation : {description}"
             )
             image_check_response = requests.post(
@@ -198,6 +203,7 @@ def pre_diagnostic(request):
             image_species = image_check.get('espece_image')
             if image_species not in ('bovin', 'ovin', 'caprin', 'porcin', 'autre', 'indeterminable'):
                 raise ValueError('Espèce reconnue invalide.')
+            visual_observations = str(image_check.get('observations_visuelles') or '').strip()
             if image_species == 'autre':
                 return Response(
                     {'detail': 'Cette photo ne montre pas un bovin, un ovin, un caprin ou un porcin. Ces quatre espèces sont les seules prises en charge.'},
@@ -228,6 +234,8 @@ def pre_diagnostic(request):
                    f"Sexe : {animal.get_sexe_display()}. État actuel : {animal.get_etat_sante_display()}.")
     elif diagnostic:
         context = f"Espèce reconnue sur la photo : {image_species}."
+    if visual_observations:
+        context = f"{context}\nConstats visuels prudents issus de l’image : {visual_observations}"
     classification_prompt = (
         "Tu es un filtre strict pour un assistant vétérinaire. Classe le dernier message de l’éleveur en tenant compte de l’animal et "
         "des messages précédents. Le domaine autorisé est exclusivement la santé, les symptômes, le bien-être ou les soins de l’animal "
@@ -259,14 +267,26 @@ def pre_diagnostic(request):
     except (requests.RequestException, ValueError, KeyError, TypeError, IndexError):
         return Response({'detail': 'La vérification de la question est momentanément indisponible. Réessayez dans quelques instants.'}, status=status.HTTP_502_BAD_GATEWAY)
 
-    in_scope = scope['dans_domaine_sante_animale'] and scope['concerne_cet_animal']
+    in_health_domain = scope['dans_domaine_sante_animale']
+    concerns_animal = scope['concerne_cet_animal']
     sex_compatible = scope['compatible_sexe']
-    if not in_scope:
+    if not in_health_domain:
         assistant_reply = 'Je peux répondre uniquement aux questions de santé concernant l’animal de cette conversation.'
         suggestions = []
         recommendations = []
         urgency = 'faible'
         limitations = 'Cette question ne relève pas du domaine du pré-diagnostic vétérinaire de cet animal.'
+    elif not concerns_animal and not image_matches_description:
+        detail = 'L’image et l’observation ne semblent pas correspondre.'
+        if image_mismatch_reason:
+            detail = f'{detail} {image_mismatch_reason}'
+        return Response({'detail': detail}, status=status.HTTP_400_BAD_REQUEST)
+    elif not concerns_animal:
+        assistant_reply = 'Je peux répondre uniquement aux questions de santé concernant l’animal de cette conversation.'
+        suggestions = []
+        recommendations = []
+        urgency = 'faible'
+        limitations = 'Cette question ne concerne pas l’animal de la photo ou de la fiche.'
     elif not sex_compatible:
         sex_label = animal.get_sexe_display().lower() if animal else 'indéterminé'
         assistant_reply = f'Cette question ne s’applique pas au sexe indiqué pour cet animal ({sex_label}). Je peux vous aider sur un autre sujet de santé le concernant.'
@@ -294,12 +314,14 @@ def pre_diagnostic(request):
         "Utilise le sexe fourni dans la fiche comme référence : ne pose jamais de question sur la gestation, la grossesse ou la mise bas "
         "pour un mâle, et ne pose pas de question sur des organes exclusivement masculins pour une femelle. Ne suppose pas le sexe à partir "
         "de la photo et ne pose pas de questions de reproduction si elles ne sont pas pertinentes aux symptômes rapportés. "
+        "Pour ta première réponse, indique brièvement ce que la photo permet réellement d’observer et distingue ces observations d’un diagnostic. "
+        "Utilise les constats visuels fournis ci-dessous comme description de la photo, sans les transformer en certitude médicale. "
         "Signale les signes qui nécessitent un vétérinaire. Réponds uniquement en JSON avec : message (ta réponse naturelle à l’éleveur), "
         "suggestions (liste d’objets avec nom, justification, niveau), recommandations (liste d’actions immédiates sûres), "
         "urgence (faible, modérée ou élevée), limites (texte). "
         f"\nAnimal : {context}\nPhoto validée : espèce {image_species}."
     )
-    if in_scope and sex_compatible:
+    if in_health_domain and sex_compatible:
         messages = [{'role': 'system', 'content': prompt}]
         if conversation:
             messages.extend({'role': turn['role'], 'content': turn['content']} for turn in conversation)
@@ -352,11 +374,16 @@ def pre_diagnostic(request):
         diagnostic.urgence = urgency
         diagnostic.limites = limitations
         diagnostic.conversation = conversation
-        diagnostic.save(update_fields=['suggestions', 'recommandations', 'urgence', 'limites', 'conversation'])
+        diagnostic.observations_visuelles = visual_observations
+        diagnostic.save(update_fields=[
+            'suggestions', 'recommandations', 'urgence', 'limites', 'conversation',
+            'observations_visuelles',
+        ])
     else:
         diagnostic = PreDiagnostic.objects.create(
             utilisateur=request.user, animal=animal, photo=image, description=description,
-            conversation=conversation, espece_image=image_species, suggestions=suggestions,
+            conversation=conversation, espece_image=image_species,
+            observations_visuelles=visual_observations, suggestions=suggestions,
             recommandations=recommendations, urgence=urgency, limites=limitations,
             modele=settings.OPENROUTER_VISION_MODEL,
         )
@@ -385,5 +412,8 @@ def pre_diagnostic(request):
         'recommandations': diagnostic.recommandations, 'urgence': diagnostic.urgence,
         'limites': diagnostic.limites, 'date_creation': diagnostic.date_creation,
         'historique_evenement_id': diagnostic.historique_evenement_id,
-        'validation_image': {'espece': diagnostic.espece_image},
+        'validation_image': {
+            'espece': diagnostic.espece_image,
+            'observations': diagnostic.observations_visuelles,
+        },
     }, status=status.HTTP_201_CREATED)

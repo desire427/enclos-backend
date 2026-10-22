@@ -50,6 +50,7 @@ class PreDiagnostic(models.Model):
     description = models.TextField()
     conversation = models.JSONField(default=list, blank=True)
     espece_image = models.CharField(max_length=20, blank=True)
+    observations_visuelles = models.TextField(blank=True)
     suggestions = models.JSONField(default=list)
     recommandations = models.JSONField(default=list)
     urgence = models.CharField(max_length=20, choices=URGENCE_CHOICES, default='modérée')

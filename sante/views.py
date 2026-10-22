@@ -1,5 +1,6 @@
 import base64
 import json
+import logging
 import re
 from datetime import date
 
@@ -11,6 +12,8 @@ from rest_framework.parsers import FormParser, MultiPartParser
 from rest_framework.response import Response
 from .models import SuiviSante
 from .serializers import SuiviSanteSerializer
+
+logger = logging.getLogger(__name__)
 
 
 @api_view(['POST'])
@@ -52,12 +55,15 @@ def extraire_ordonnance(request):
         return Response({'detail': 'Le fichier fourni ne contient pas une image valide.'}, status=status.HTTP_400_BAD_REQUEST)
 
     prompt = (
-        "Transcris cette ordonnance vétérinaire et extrais les champs sans rien inventer. "
+        "Transcris cette ordonnance vétérinaire, y compris les maquettes et ordonnances fictives utilisées pour tester un logiciel, "
+        "et extrais les champs sans rien inventer. La mention TEST, FICTIF ou DEMONSTRATION ne rend pas le document illisible : "
+        "recopie ces mentions si elles font partie du titre, mais extrais aussi les médicaments et consignes visibles. "
         "Recopie fidèlement les noms de médicaments, dosages, fréquences, durées, voies d’administration et instructions lisibles. "
         "Regroupe chaque médicament et sa posologie dans le champ medicaments, une ligne par médicament; mets les consignes générales "
         "dans instructions. Utilise le format de date YYYY-MM-DD uniquement si la date est lisible et non ambiguë; sinon laisse la date vide. "
-        "Si l’image est noire, vide, sans écriture ou ne montre pas une ordonnance vétérinaire, ne devine aucun contenu et indique "
-        "texte_ordonnance_detecte à false. Pour une vraie ordonnance, mets texte_ordonnance_detecte à true. "
+        "Mets texte_ordonnance_detecte à true dès qu'une prescription, une maquette de prescription ou un exemple de prescription "
+        "est visible avec au moins un médicament ou une consigne de traitement. Mets ce champ à false uniquement si l’image est noire, "
+        "vide, sans écriture lisible ou ne contient aucun élément de prescription. Ne devine jamais le texte manquant. "
         "Si le titre, le nom du vétérinaire ou un texte est absent ou illisible, renvoie une chaîne vide pour ce champ. "
         "Réponds uniquement en JSON avec les champs texte_ordonnance_detecte, titre, veterinaire, date_prescription, medicaments et instructions."
     )
@@ -79,9 +85,12 @@ def extraire_ordonnance(request):
             raise ValueError('La réponse OCR doit être un objet JSON.')
         fields = ('titre', 'veterinaire', 'date_prescription', 'medicaments', 'instructions')
         data = {field: str(extracted.get(field) or '').strip() for field in fields}
-        if extracted.get('texte_ordonnance_detecte') is not True or not any(
-            data[field] for field in ('titre', 'medicaments', 'instructions')
-        ):
+        has_prescription_content = bool(data['medicaments'] or data['instructions'])
+        if not has_prescription_content:
+            logger.info(
+                'Gemini ordonnance OCR found no prescription content (detected=%s).',
+                extracted.get('texte_ordonnance_detecte'),
+            )
             return Response(
                 {'detail': 'Aucune écriture d’ordonnance lisible n’a été détectée. Prenez une photo nette de l’ordonnance.'},
                 status=status.HTTP_400_BAD_REQUEST,
@@ -92,7 +101,37 @@ def extraire_ordonnance(request):
             except ValueError:
                 data['date_prescription'] = ''
         data['informations_a_verifier'] = [field for field in fields if not data[field]]
-    except (requests.RequestException, ValueError, KeyError, TypeError, IndexError):
+    except requests.HTTPError as exc:
+        upstream_status = exc.response.status_code if exc.response is not None else None
+        logger.warning('Gemini ordonnance OCR rejected the request (HTTP %s).', upstream_status)
+        if upstream_status in (401, 403):
+            return Response(
+                {'detail': 'Le service OCR a refusé la clé Gemini. Vérifiez GEMINI_API_KEY dans backend/.env.'},
+                status=status.HTTP_503_SERVICE_UNAVAILABLE,
+            )
+        if upstream_status == 429:
+            return Response(
+                {'detail': 'Le quota du service OCR est atteint. Réessayez plus tard ou vérifiez le quota Gemini.'},
+                status=status.HTTP_503_SERVICE_UNAVAILABLE,
+            )
+        return Response(
+            {'detail': 'Le service OCR a refusé la requête. Vérifiez le modèle Gemini et réessayez.'},
+            status=status.HTTP_502_BAD_GATEWAY,
+        )
+    except requests.Timeout:
+        logger.warning('Gemini ordonnance OCR request timed out.')
+        return Response(
+            {'detail': 'Le service OCR met trop de temps à répondre. Réessayez dans quelques instants.'},
+            status=status.HTTP_504_GATEWAY_TIMEOUT,
+        )
+    except requests.RequestException as exc:
+        logger.warning('Gemini ordonnance OCR request failed (%s).', type(exc).__name__)
+        return Response(
+            {'detail': 'Impossible de joindre le service OCR. Vérifiez la connexion Internet du backend et réessayez.'},
+            status=status.HTTP_502_BAD_GATEWAY,
+        )
+    except (ValueError, KeyError, TypeError, IndexError) as exc:
+        logger.warning('Gemini ordonnance OCR returned an invalid response (%s).', type(exc).__name__)
         return Response({'detail': 'L’extraction de l’ordonnance est indisponible. Réessayez avec une photo plus nette.'}, status=status.HTTP_502_BAD_GATEWAY)
 
     return Response(data, status=status.HTTP_200_OK)
